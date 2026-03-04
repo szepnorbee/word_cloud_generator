@@ -1,0 +1,446 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Upload, Download, RefreshCw, Type, Image as ImageIcon, Settings2, Palette, Info, Maximize } from 'lucide-react';
+
+const App = () => {
+  const [image, setImage] = useState(null);
+  const [words, setWords] = useState("Mycotoxins, Aflatoxin, Ochratoxin, Deoxynivalenol, DON, Zearalenone, Fumonisin, T-2, HT-2, Patulin, Ergot Alkaloids, Food Allergens, Gluten-free, Lactose, Pathogens, Salmonella, Listeria, E. coli, Campylobacter, GMO, Genetically Modified Organisms, Drug Residues, Antibiotics, Vitamins, Diagnostics, Immunoassay, ELISA, Lateral Flow Device, LFD, Strip Test, Rapid Testing, Reference Materials, Clean-up Columns, Immunoaffinity Columns, IAC, Solid Phase Extraction, SPE, LC-MS/MS, HPLC, Quantitative Analysis, Qualitative Screening, Point-of-Need Testing, On-site Analysis, Sample Preparation, Milling, Grinding, Extraction, Incubation, Food Safety, Feed Safety, Consumer Protection, Regulatory Compliance, HACCP, Laboratory Services, Analytical Excellence, Validation, Proficiency Testing, Standardization, Traceability, Supply Chain Integrity, Quality Control, QC, Quality Assurance, QA, LOD, Limit of Detection, LOQ, Limit of Quantitation, Matrix-matched, ISO Accreditation, AgraStrip, AgraQuant, MycoSep, MultiSep, Star-E, CytoQuant, Biopure, Ergotop, Innovation, Reliability, Accuracy, Precision, Detection, Prevention, Science, Expertise, Global Network, Sustainability, Public Health, Diagnostic Solutions, Making the World’s Food Safer, Total Quality Management, Advanced Diagnostic Solutions, Leading Technology, Ensuring Product Integrity, Representative Sampling, Cross-reactivity, Troubleshooting, Analytical Workflows");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [imageColors, setImageColors] = useState(['#0f766e', '#134e4a', '#2dd4bf', '#064e3b', '#115e59']);
+  const [progress, setProgress] = useState(0);
+  
+  const [config, setConfig] = useState({
+    minFontSize: 5,
+    maxFontSize: 55,
+    fontFamily: 'system-ui, -apple-system, sans-serif',
+    padding: 1,
+    rotate: true,
+    densityMultiplier: 2.5,
+    backgroundVisible: false,
+    contrastThreshold: 240 // Fehér vonalak érzékenysége
+  });
+
+  const canvasRef = useRef(null);
+  const maskCanvasRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  const extractColors = (img) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const colors = {};
+    for (let i = 0; i < data.length; i += 150) {
+      if (data[i+3] > 180 && (data[i] < 230 || data[i+1] < 230 || data[i+2] < 230)) {
+        const hex = `#${((1 << 24) + (data[i] << 16) + (data[i+1] << 8) + data[i+2]).toString(16).slice(1)}`;
+        colors[hex] = (colors[hex] || 0) + 1;
+      }
+    }
+    const topColors = Object.entries(colors).sort((a, b) => b[1] - a[1]).slice(0, 8).map(c => c[0]);
+    if (topColors.length > 0) setImageColors(topColors);
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        setImage(img);
+        extractColors(img);
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const downloadCanvas = () => {
+    if (!canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const link = document.createElement('a');
+    link.download = 'premium_wordcloud.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+
+  const generateWordCloud = async () => {
+    if (!image || !canvasRef.current) return;
+    setIsGenerating(true);
+    setProgress(0);
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const maskCanvas = maskCanvasRef.current;
+    const mctx = maskCanvas.getContext('2d', { willReadFrequently: true });
+
+    const width = 1200; // Nagyobb felbontás a szebb élekért
+    const scale = width / image.width;
+    canvas.width = width;
+    canvas.height = image.height * scale;
+    maskCanvas.width = canvas.width;
+    maskCanvas.height = canvas.height;
+
+    mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    mctx.drawImage(image, 0, 0, maskCanvas.width, maskCanvas.height);
+    const maskData = mctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data;
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (config.backgroundVisible) {
+        ctx.globalAlpha = 0.03;
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        ctx.globalAlpha = 1.0;
+    }
+
+    const wordList = words.split(/[,|\n]+/).map(w => w.trim()).filter(w => w.length > 0);
+    const sortedWords = wordList.sort((a, b) => b.length - a.length);
+
+    const isPointInMask = (x, y) => {
+      if (x < 0 || x >= maskCanvas.width || y < 0 || y >= maskCanvas.height) return false;
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      const idx = (iy * maskCanvas.width + ix) * 4;
+      // Alpha és kontraszt együttes vizsgálata
+      return maskData[idx + 3] > 100 && (maskData[idx] < config.contrastThreshold || maskData[idx+1] < config.contrastThreshold || maskData[idx+2] < config.contrastThreshold);
+    };
+
+    const placedWords = [];
+
+    const findPosition = (text, fontSize, rotate) => {
+      ctx.font = `bold ${fontSize}px ${config.fontFamily}`;
+      const metrics = ctx.measureText(text);
+      const w = metrics.width + config.padding * 2;
+      const h = fontSize + config.padding * 2;
+
+      let startX = canvas.width / 2;
+      let startY = canvas.height / 2;
+
+      let angle = 0;
+      let radius = 0;
+      const maxRadius = Math.max(canvas.width, canvas.height);
+      
+      while (radius < maxRadius) {
+        const x = startX + radius * Math.cos(angle);
+        const y = startY + radius * Math.sin(angle);
+
+        if (x > 0 && x < canvas.width && y > 0 && y < canvas.height) {
+          const bounds = {
+            x: x - (rotate ? h/2 : w/2),
+            y: y - (rotate ? w/2 : h/2),
+            w: rotate ? h : w,
+            h: rotate ? w : h
+          };
+
+          const overlaps = placedWords.some(other => {
+            return !(bounds.x + bounds.w < other.x || 
+                     bounds.x > other.x + other.w || 
+                     bounds.y + bounds.h < other.y || 
+                     bounds.y > other.y + other.h);
+          });
+
+          if (!overlaps) {
+            // Szigorúbb minta: több belső pontot is nézünk nagyobb szavaknál
+            const checkStep = Math.max(4, fontSize / 4);
+            let fits = true;
+            for (let px = bounds.x; px <= bounds.x + bounds.w; px += checkStep) {
+              for (let py = bounds.y; py <= bounds.y + bounds.h; py += checkStep) {
+                if (!isPointInMask(px, py)) {
+                  fits = false;
+                  break;
+                }
+              }
+              if (!fits) break;
+            }
+            
+            if (fits) return { x, y, bounds };
+          }
+        }
+
+        angle += 0.25;
+        radius += 0.18;
+      }
+      return null;
+    };
+
+    // --- TÖBBLÉPCSŐS GENERÁLÁS ---
+    const totalWordsToTry = Math.floor(sortedWords.length * config.densityMultiplier);
+    
+    for (let i = 0; i < totalWordsToTry; i++) {
+      const text = sortedWords[i % sortedWords.length];
+      
+      // Három fázis: Nagy -> Közepes -> Kicsi
+      let fontSize;
+      if (i < totalWordsToTry * 0.2) {
+          fontSize = Math.floor(config.maxFontSize * (1 - (i / (totalWordsToTry * 0.2)) * 0.4));
+      } else if (i < totalWordsToTry * 0.6) {
+          fontSize = Math.floor(config.maxFontSize * 0.5 * (1 - ((i - totalWordsToTry * 0.2) / (totalWordsToTry * 0.4)) * 0.5));
+      } else {
+          fontSize = Math.max(config.minFontSize, Math.floor(config.maxFontSize * 0.15));
+      }
+      
+      const rotate = config.rotate && Math.random() > 0.8;
+      const pos = findPosition(text, fontSize, rotate);
+
+      if (pos) {
+        ctx.save();
+        ctx.translate(pos.x, pos.y);
+        if (rotate) ctx.rotate(Math.PI / 2);
+        
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Szín kiválasztása
+        const color = imageColors[Math.floor(Math.random() * imageColors.length)];
+        ctx.fillStyle = color;
+        ctx.font = `bold ${fontSize}px ${config.fontFamily}`;
+        
+        // Enyhe árnyék a jobb olvashatóságért (opcionális)
+        // ctx.shadowColor = 'rgba(0,0,0,0.1)';
+        // ctx.shadowBlur = 1;
+        
+        ctx.fillText(text, 0, 0);
+        ctx.restore();
+        
+        placedWords.push(pos.bounds);
+      }
+
+      if (i % 20 === 0) {
+          setProgress(Math.round((i / totalWordsToTry) * 100));
+          await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    setIsGenerating(false);
+    setProgress(100);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#f1f5f9] p-4 md:p-8 font-sans text-slate-900">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex flex-col xl:flex-row gap-8">
+          
+          {/* KONFIGURÁCIÓS PANEL */}
+          <div className="w-full xl:w-[400px] space-y-6">
+            <div className="bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+              <div className="bg-gradient-to-r from-teal-800 to-teal-600 p-6 text-white">
+                <h1 className="text-2xl font-black flex items-center gap-3">
+                    <Maximize className={isGenerating ? "animate-pulse" : ""} size={28} />
+                    WordCloud <span className="font-light opacity-80">PRO</span>
+                </h1>
+                <p className="text-teal-100 text-xs mt-1 font-medium tracking-wide">PRECIZIÓS KITÖLTŐ ALGORITMUS V3.5</p>
+              </div>
+
+              <div className="p-6 space-y-8">
+                {/* 1. Alakzat */}
+                <div className="space-y-3">
+                  <label className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                    <ImageIcon size={14} /> 1. Alakzat Forrása
+                  </label>
+                  <div 
+                    onClick={() => fileInputRef.current.click()}
+                    className={`group border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all ${image ? 'border-teal-500 bg-teal-50/50' : 'border-slate-200 hover:border-teal-400 hover:bg-slate-50'}`}
+                  >
+                    <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+                    {image ? (
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                                <div className="p-2 bg-white rounded-xl shadow-sm border border-teal-100">
+                                    <img src={image.src} className="w-12 h-12 object-contain" alt="preview" />
+                                </div>
+                                <div className="text-left">
+                                    <p className="text-sm font-bold text-teal-900">Logó betöltve</p>
+                                    <p className="text-[10px] text-teal-600 font-semibold uppercase">Csere kattintással</p>
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="py-4 space-y-2">
+                            <Upload className="mx-auto text-slate-300 group-hover:text-teal-500 transition-colors" size={32} />
+                            <p className="text-xs font-bold text-slate-500">Húzd ide vagy kattints a feltöltéshez</p>
+                        </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Szókészlet */}
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <label className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <Type size={14} /> 2. Szókészlet
+                    </label>
+                    <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded text-[10px] font-bold">{words.split(',').length} Kifejezés</span>
+                  </div>
+                  <textarea
+                    value={words}
+                    onChange={(e) => setWords(e.target.value)}
+                    className="w-full h-48 p-4 text-xs border border-slate-200 rounded-2xl focus:ring-4 focus:ring-teal-500/10 focus:border-teal-500 outline-none font-medium leading-relaxed bg-slate-50/50 transition-all"
+                    placeholder="Vesszővel elválasztott szavak..."
+                  />
+                </div>
+
+                {/* 3. Finomhangolás */}
+                <div className="space-y-6 pt-6 border-t border-slate-100">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <label className="text-[10px] font-black text-slate-500 uppercase">Max méret</label>
+                                <span className="text-xs font-mono text-teal-600 font-bold">{config.maxFontSize}</span>
+                            </div>
+                            <input type="range" min="20" max="100" value={config.maxFontSize} 
+                                onChange={(e) => setConfig({...config, maxFontSize: parseInt(e.target.value)})}
+                                className="w-full accent-teal-600"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                                <label className="text-[10px] font-black text-slate-500 uppercase">Sűrűség</label>
+                                <span className="text-xs font-mono text-teal-600 font-bold">x{config.densityMultiplier}</span>
+                            </div>
+                            <input type="range" min="1" max="5" step="0.5" value={config.densityMultiplier} 
+                                onChange={(e) => setConfig({...config, densityMultiplier: parseFloat(e.target.value)})}
+                                className="w-full accent-teal-600"
+                            />
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-black text-slate-500 uppercase">Swoosh Érzékenység</span>
+                                <span className="text-[9px] text-slate-400 font-medium">Hogyan kezelje a fehér íveket?</span>
+                            </div>
+                            <input type="range" min="200" max="254" value={config.contrastThreshold} 
+                                onChange={(e) => setConfig({...config, contrastThreshold: parseInt(e.target.value)})}
+                                className="w-24 accent-teal-600"
+                            />
+                        </div>
+
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                            <span className="text-[10px] font-black text-slate-500 uppercase">Függőleges szavak</span>
+                            <button 
+                                onClick={() => setConfig({...config, rotate: !config.rotate})}
+                                className={`w-11 h-6 rounded-full relative transition-all duration-300 ${config.rotate ? 'bg-teal-600' : 'bg-slate-300'}`}
+                            >
+                                <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-300 ${config.rotate ? 'left-6' : 'left-1'}`} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <button
+                  onClick={generateWordCloud}
+                  disabled={!image || isGenerating}
+                  className={`group w-full py-5 rounded-2xl font-black text-sm tracking-widest text-white shadow-xl transition-all ${
+                    !image || isGenerating ? 'bg-slate-300 cursor-not-allowed' : 'bg-teal-600 hover:bg-teal-700 active:scale-[0.98] hover:shadow-teal-500/20'
+                  }`}
+                >
+                  <div className="flex items-center justify-center gap-3">
+                    {isGenerating ? <RefreshCw className="animate-spin" size={20} /> : <RefreshCw size={20} />}
+                    {isGenerating ? `FELDOLGOZÁS: ${progress}%` : "SZÓFELHŐ GENERÁLÁSA"}
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* VÁSZON / EREDMÉNY PANEL */}
+          <div className="flex-1 space-y-6">
+            <div className="bg-white rounded-[40px] shadow-2xl border border-slate-200 p-10 min-h-[800px] flex flex-col items-center justify-center relative bg-[url('https://www.transparenttextures.com/patterns/white-diamond.png')] overflow-hidden">
+                
+                {isGenerating && (
+                    <div className="absolute inset-0 bg-white/70 backdrop-blur-md z-20 flex flex-col items-center justify-center">
+                        <div className="w-80 h-1.5 bg-slate-100 rounded-full overflow-hidden mb-6">
+                            <div className="h-full bg-teal-600 transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+                        </div>
+                        <div className="text-center space-y-2">
+                            <p className="text-sm font-black text-teal-900 tracking-[0.2em] uppercase">Mérnöki precíziós illesztés</p>
+                            <p className="text-[10px] text-teal-600 font-bold uppercase animate-pulse">Szavak pozícionálása a spirál mentén...</p>
+                        </div>
+                    </div>
+                )}
+
+                <div className="relative group">
+                    <canvas 
+                        ref={canvasRef} 
+                        className="max-w-full h-auto drop-shadow-[0_35px_60px_rgba(0,0,0,0.15)] rounded-2xl transition-transform duration-500 group-hover:scale-[1.01]"
+                    />
+                    
+                    {!image && (
+                        <div className="text-center max-w-sm py-20">
+                            <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-8 border border-slate-100">
+                                <ImageIcon size={48} className="text-slate-200" />
+                            </div>
+                            <h3 className="text-2xl font-black text-slate-800 mb-3 tracking-tight">Várjuk az alakzatot</h3>
+                            <p className="text-slate-400 text-sm leading-relaxed font-medium">Töltsd fel a logót, és az algoritmus automatikusan felméri a kitölthető területeket és a tiltott zónákat.</p>
+                        </div>
+                    )}
+                </div>
+                
+                <canvas ref={maskCanvasRef} className="hidden" />
+
+                {image && !isGenerating && (
+                    <div className="absolute bottom-8 right-8 flex gap-3">
+                        <button 
+                            onClick={() => setConfig({...config, backgroundVisible: !config.backgroundVisible})}
+                            className={`p-4 rounded-2xl shadow-lg transition-all border ${config.backgroundVisible ? 'bg-teal-600 text-white border-teal-500' : 'bg-white text-slate-600 border-slate-100 hover:bg-slate-50'}`}
+                            title="Eredeti logó halvány megjelenítése"
+                        >
+                            <ImageIcon size={24} />
+                        </button>
+                        <button 
+                            onClick={downloadCanvas}
+                            className="p-4 bg-teal-900 text-white rounded-2xl shadow-lg hover:bg-black transition-all border border-teal-800"
+                            title="Nagyfelbontású exportálás"
+                        >
+                            <Download size={24} />
+                        </button>
+                    </div>
+                )}
+
+                {image && !isGenerating && (
+                    <div className="absolute top-8 left-8">
+                        <div className="flex items-center gap-3 bg-white/80 backdrop-blur-md p-3 rounded-2xl border border-slate-100 shadow-sm">
+                            <div className="flex -space-x-2">
+                                {imageColors.map((c, i) => (
+                                    <div key={i} className="w-6 h-6 rounded-full border-2 border-white shadow-sm" style={{ backgroundColor: c }} />
+                                ))}
+                            </div>
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Aktív Paletta</span>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-start gap-4">
+                    <div className="p-3 bg-teal-50 text-teal-600 rounded-2xl"><Settings2 size={24}/></div>
+                    <div>
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Mód</h4>
+                        <p className="text-sm font-bold text-slate-700 leading-tight">Multi-pass Spirál<br/><span className="text-[10px] font-normal text-slate-500">Háromszintű kitöltés</span></p>
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-start gap-4">
+                    <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl"><Palette size={24}/></div>
+                    <div>
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Színkezelés</h4>
+                        <p className="text-sm font-bold text-slate-700 leading-tight">Logó-alapú<br/><span className="text-[10px] font-normal text-slate-500">Automatikus extrakció</span></p>
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex items-start gap-4">
+                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl"><Info size={24}/></div>
+                    <div>
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Tipp</h4>
+                        <p className="text-[11px] font-medium text-slate-600 leading-tight">A fehér vonalak tisztaságához állítsd a "Swoosh" érzékenységet 240 körülire.</p>
+                    </div>
+                </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
